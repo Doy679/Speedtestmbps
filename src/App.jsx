@@ -112,24 +112,26 @@ export default function App() {
       setNetworkType('Wired / Ethernet');
     }
 
-    fetch('http://ip-api.com/json/')
+    fetch('https://ipwho.is/')
       .then(res => res.ok ? res.json() : Promise.reject())
       .then(data => {
-        if (data.status === 'success') {
-          setClientIp(data.query);
-          setClientIsp(data.isp || data.org || 'Unknown ISP');
+        if (data.success) {
+          setClientIp(data.ip);
+          setClientIsp(data.connection.isp || data.connection.org || 'Unknown ISP');
           setClientLocation(`${data.city}, ${data.country}`);
           setClientFullData({
-            ip: data.query,
-            connection: { isp: data.isp, org: data.org },
+            ip: data.ip,
+            connection: { isp: data.connection.isp, org: data.connection.org },
             city: data.city,
-            region: data.regionName,
+            region: data.region,
             country: data.country,
-            latitude: data.lat,
-            longitude: data.lon,
-            timezone: { id: data.timezone, utc: '' },
-            flag: { emoji: '' }
+            latitude: data.latitude,
+            longitude: data.longitude,
+            timezone: { id: data.timezone.id, utc: data.timezone.utc },
+            flag: { emoji: data.flag.emoji }
           });
+        } else {
+          return Promise.reject();
         }
       })
       .catch(() => {
@@ -687,7 +689,7 @@ export default function App() {
                             stroke={testState === 'upload' ? '#ffffff' : '#ff4d00'} 
                             fillOpacity={1} 
                             fill="url(#colorSpeed)" 
-                            isAnimationActive={false}
+                            isAnimationActive={true}
                          />
                        </AreaChart>
                      </ResponsiveContainer>
