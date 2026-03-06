@@ -112,33 +112,66 @@ export default function App() {
       setNetworkType('Wired / Ethernet');
     }
 
-    fetch('https://get.geojs.io/v1/ip/geo.json')
-      .then(res => res.ok ? res.json() : Promise.reject())
-      .then(data => {
-        if (data.ip) {
-          setClientIp(data.ip);
-          setClientIsp(data.organization_name || data.organization || 'Unknown ISP');
-          setClientLocation(`${data.city}, ${data.country}`);
-          setClientFullData({
-            ip: data.ip,
-            connection: { isp: data.organization_name, org: data.organization },
-            city: data.city,
-            region: data.region,
-            country: data.country,
-            latitude: data.latitude,
-            longitude: data.longitude,
-            timezone: { id: data.timezone, utc: '' },
-            flag: { emoji: '' }
-          });
-        } else {
-          return Promise.reject();
+    const fetchIpInfo = async () => {
+      let data = null;
+      try {
+        const res = await fetch('https://ipapi.co/json/');
+        if (res.ok) {
+          const d = await res.json();
+          if (!d.error) {
+            data = {
+              ip: d.ip, isp: d.org || d.asn, city: d.city, region: d.region, country: d.country_name,
+              latitude: d.latitude, longitude: d.longitude, timezone: d.timezone, flag: ''
+            };
+          }
         }
-      })
-      .catch(() => {
+      } catch (e) {}
+
+      if (!data) {
+        try {
+          const res = await fetch('https://get.geojs.io/v1/ip/geo.json');
+          if (res.ok) {
+            const d = await res.json();
+            data = {
+              ip: d.ip, isp: d.organization_name || d.organization, city: d.city, region: d.region, country: d.country,
+              latitude: d.latitude, longitude: d.longitude, timezone: d.timezone, flag: ''
+            };
+          }
+        } catch (e) {}
+      }
+
+      if (!data) {
+        try {
+          const res = await fetch('https://ipwho.is/');
+          if (res.ok) {
+            const d = await res.json();
+            if (d.success) {
+              data = {
+                ip: d.ip, isp: d.connection.isp || d.connection.org, city: d.city, region: d.region, country: d.country,
+                latitude: d.latitude, longitude: d.longitude, timezone: d.timezone.id, flag: d.flag.emoji
+              };
+            }
+          }
+        } catch (e) {}
+      }
+
+      if (data) {
+        setClientIp(data.ip || 'Unknown IP');
+        setClientIsp(data.isp || 'Unknown ISP');
+        setClientLocation(`${data.city || 'Unknown'}, ${data.country || 'Unknown'}`);
+        setClientFullData({
+          ip: data.ip, connection: { isp: data.isp, org: data.isp },
+          city: data.city, region: data.region, country: data.country,
+          latitude: data.latitude, longitude: data.longitude,
+          timezone: { id: data.timezone, utc: '' }, flag: { emoji: data.flag || '' }
+        });
+      } else {
         setClientIp('Connection Blocked');
         setClientIsp('Provider Restricted');
         setClientLocation('Signal Interrupted');
-      });
+      }
+    };
+    fetchIpInfo();
   }, []);
 
   const activeIntervals = useRef([]);
@@ -681,15 +714,23 @@ export default function App() {
                              <stop offset="5%" stopColor={testState === 'upload' ? '#ffffff' : '#ff4d00'} stopOpacity={0.8}/>
                              <stop offset="95%" stopColor={testState === 'upload' ? '#ffffff' : '#ff4d00'} stopOpacity={0}/>
                            </linearGradient>
+                           <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+                             <feGaussianBlur stdDeviation="4" result="blur" />
+                             <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                           </filter>
                          </defs>
                          <YAxis domain={['auto', 'auto']} hide />
                          <Area 
-                            type="monotone" 
+                            type="basis" 
                             dataKey="speed" 
                             stroke={testState === 'upload' ? '#ffffff' : '#ff4d00'} 
+                            strokeWidth={3}
                             fillOpacity={1} 
                             fill="url(#colorSpeed)" 
                             isAnimationActive={true}
+                            animationDuration={400}
+                            animationEasing="ease-out"
+                            filter="url(#glow)"
                          />
                        </AreaChart>
                      </ResponsiveContainer>
