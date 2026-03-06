@@ -78,7 +78,7 @@ export default function App() {
   // Client Info
   const [clientIp, setClientIp] = useState('Detecting...');
   const [clientIsp, setClientIsp] = useState('Detecting ISP...');
-  const [clientLocation, setClientLocation] = useState('Detecting Location...');
+  const [clientLocation, setClientLocation] = useState('Synchronizing Grid...');
   const [clientFullData, setClientFullData] = useState(null);
   const [showIpDetails, setShowIpDetails] = useState(false);
 
@@ -97,6 +97,158 @@ export default function App() {
     }
   }, [logs]);
 
+  const fetchIpInfo = async () => {
+    let data = null;
+    addLog('Synchronizing terminal location...', 'info');
+
+    // 1. Try Browser Geolocation first (Most Accurate)
+    if ("geolocation" in navigator) {
+      try {
+        const position = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, { 
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+          });
+        });
+        
+        const { latitude, longitude } = position.coords;
+        addLog(`GPS coordinates captured: [${latitude.toFixed(4)}, ${longitude.toFixed(4)}]`, 'success');
+        
+        // Reverse geocode using OpenStreetMap (Free, no API key needed)
+        const geoRes = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=18&addressdetails=1`, {
+          headers: { 'Accept-Language': 'en' }
+        });
+        
+        if (geoRes.ok) {
+          const geoData = await geoRes.json();
+          const city = geoData.address.city || geoData.address.town || geoData.address.village || geoData.address.suburb || "Unknown City";
+          const country = geoData.address.country || "Unknown Country";
+          
+          data = {
+            city,
+            country,
+            latitude,
+            longitude,
+            accuracy: 'high'
+          };
+          addLog(`Location Refined: ${city}, ${country}`, 'success');
+        }
+      } catch (e) {
+        addLog('GPS Access Denied. Using IP-based triangulation.', 'warn');
+      }
+    }
+
+    // 2. Fallback/Supplement with IP info for ISP/IP data
+    try {
+      const res = await fetch('https://ipapi.co/json/');
+      if (res.ok) {
+        const d = await res.json();
+        if (!d.error) {
+          data = {
+            ...data,
+            ip: d.ip, 
+            isp: d.org || d.asn, 
+            city: data?.city || d.city, 
+            region: d.region, 
+            country: data?.country || d.country_name,
+            latitude: data?.latitude || d.latitude, 
+            longitude: data?.longitude || d.longitude, 
+            timezone: d.timezone
+          };
+        }
+      }
+    } catch (e) {}
+
+    if (!data) {
+      // Primary fallback: ip-api.com (No key needed, very reliable)
+      try {
+        const res = await fetch('http://ip-api.com/json/');
+        if (res.ok) {
+          const d = await res.json();
+          if (d.status === 'success') {
+            data = {
+              ip: d.query,
+              isp: d.isp || d.org,
+              city: d.city,
+              region: d.regionName,
+              country: d.country,
+              latitude: d.lat,
+              longitude: d.lon,
+              timezone: d.timezone
+            };
+          }
+        }
+      } catch (e) {
+        // http fallback if https is blocked by browser for some reason
+        try {
+          const res = await fetch('https://ipinfo.io/json'); // Basic JSON for city/country
+          if (res.ok) {
+            const d = await res.json();
+            data = {
+              ip: d.ip, isp: d.org, city: d.city, region: d.region, country: d.country,
+              latitude: parseFloat(d.loc.split(',')[0]), longitude: parseFloat(d.loc.split(',')[1]),
+              timezone: d.timezone
+            };
+          }
+        } catch (ee) {}
+      }
+    }
+
+    if (!data) {
+      // Final fallback if all else fails
+      try {
+        const res = await fetch('https://ipwho.is/');
+        if (res.ok) {
+          const d = await res.json();
+          if (d.success) {
+            data = {
+              ip: d.ip, isp: d.connection.isp || d.connection.org, city: d.city, region: d.region, country: d.country,
+              latitude: d.latitude, longitude: d.longitude, timezone: d.timezone.id
+            };
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (!data) {
+      // Third fallback: GeoJS
+      try {
+        const res = await fetch('https://get.geojs.io/v1/ip/geo.json');
+        if (res.ok) {
+          const d = await res.json();
+          data = {
+            ip: d.ip, 
+            isp: d.organization_name || d.organization, 
+            city: d.city, 
+            region: d.region, 
+            country: d.country,
+            latitude: d.latitude, 
+            longitude: d.longitude, 
+            timezone: d.timezone
+          };
+        }
+      } catch (e) {}
+    }
+
+    if (data) {
+      setClientIp(data.ip || 'Unknown IP');
+      setClientIsp(data.isp || 'Unknown ISP');
+      setClientLocation(`${data.city || 'Unknown'}, ${data.country || 'Unknown'} [WIFITESTPH]`);
+      setClientFullData({
+        ip: data.ip, connection: { isp: data.isp, org: data.isp },
+        city: data.city, region: data.region, country: data.country,
+        latitude: data.latitude, longitude: data.longitude,
+        timezone: { id: data.timezone, utc: '' },
+        accuracy: data.accuracy || 'low'
+      });
+    } else {
+      setClientIp('Connection Blocked');
+      setClientIsp('Provider Restricted');
+      setClientLocation('Signal Interrupted [WIFITESTPH]');
+    }
+  };
+
   useEffect(() => {
     if (navigator.connection) {
       const conn = navigator.connection;
@@ -112,65 +264,6 @@ export default function App() {
       setNetworkType('Wired / Ethernet');
     }
 
-    const fetchIpInfo = async () => {
-      let data = null;
-      try {
-        const res = await fetch('https://ipapi.co/json/');
-        if (res.ok) {
-          const d = await res.json();
-          if (!d.error) {
-            data = {
-              ip: d.ip, isp: d.org || d.asn, city: d.city, region: d.region, country: d.country_name,
-              latitude: d.latitude, longitude: d.longitude, timezone: d.timezone, flag: ''
-            };
-          }
-        }
-      } catch (e) {}
-
-      if (!data) {
-        try {
-          const res = await fetch('https://get.geojs.io/v1/ip/geo.json');
-          if (res.ok) {
-            const d = await res.json();
-            data = {
-              ip: d.ip, isp: d.organization_name || d.organization, city: d.city, region: d.region, country: d.country,
-              latitude: d.latitude, longitude: d.longitude, timezone: d.timezone, flag: ''
-            };
-          }
-        } catch (e) {}
-      }
-
-      if (!data) {
-        try {
-          const res = await fetch('https://ipwho.is/');
-          if (res.ok) {
-            const d = await res.json();
-            if (d.success) {
-              data = {
-                ip: d.ip, isp: d.connection.isp || d.connection.org, city: d.city, region: d.region, country: d.country,
-                latitude: d.latitude, longitude: d.longitude, timezone: d.timezone.id, flag: d.flag.emoji
-              };
-            }
-          }
-        } catch (e) {}
-      }
-
-      if (data) {
-        setClientIp(data.ip || 'Unknown IP');
-        setClientIsp(data.isp || 'Unknown ISP');
-        setClientLocation(`${data.city || 'Unknown'}, ${data.country || 'Unknown'}`);
-        setClientFullData({
-          ip: data.ip, connection: { isp: data.isp, org: data.isp },
-          city: data.city, region: data.region, country: data.country,
-          latitude: data.latitude, longitude: data.longitude,
-          timezone: { id: data.timezone, utc: '' }, flag: { emoji: data.flag || '' }
-        });
-      } else {
-        setClientIp('Connection Blocked');
-        setClientIsp('Provider Restricted');
-        setClientLocation('Signal Interrupted');
-      }
-    };
     fetchIpInfo();
   }, []);
 
@@ -199,20 +292,26 @@ export default function App() {
   });
 
   const resetTerminal = () => {
+    const wasFinished = testState === 'finished' || parseFloat(download) > 0 || parseFloat(upload) > 0;
     cleanup();
     setTestState('idle');
-    setDownload('--');
-    setUpload('--');
-    setPingIdle('--');
+    // If we have results, don't reset them to '--' so they show on the home page
+    if (!wasFinished) {
+      setDownload('--');
+      setUpload('--');
+      setPingIdle('--');
+      setJitter('--');
+    }
     setPingDown('--');
     setPingUp('--');
-    setJitter('--');
     setProgress(0);
     setCurrentSpeed('0.00');
     setChartData([]);
     setServerColo('Routing...');
-    setQoeWeb(0); setQoeVideo(0); setQoeCalls(0); setQoeGames(0);
-    addLog('System state manual reset initiated.', 'warn');
+    if (!wasFinished) {
+      setQoeWeb(0); setQoeVideo(0); setQoeCalls(0); setQoeGames(0);
+    }
+    addLog('System state returning to home.', 'info');
   };
 
   const getCloudflareTrace = async () => {
@@ -510,7 +609,7 @@ export default function App() {
           <div>
             <div className="flex items-center gap-3">
               <h1 className="text-4xl font-black tracking-tighter text-white italic cursor-pointer" onClick={resetTerminal}>
-                CORE<span className="text-[#ff4d00]">SYNC</span>
+                WIFITEST<span className="text-[#ff4d00]">PH</span>
               </h1>
               <div className={`px-2 py-0.5 rounded text-[8px] font-bold flex items-center gap-1 ${isOnline ? 'bg-[#ff4d00]/10 text-[#ff4d00] border border-[#ff4d00]/20' : 'bg-red-500/10 text-red-500 border border-red-500/20'}`}>
                 {isOnline ? <ShieldCheck size={10} /> : <ZapOff size={10} />}
@@ -546,7 +645,16 @@ export default function App() {
                 <div className="space-y-6">
                    <div><p className="text-[9px] text-[#8b92a5] uppercase mb-1">Infrastructure</p><p className="text-sm font-bold text-white truncate">{clientIsp}</p></div>
                    <div><p className="text-[9px] text-[#8b92a5] uppercase mb-1">IP ADDRESS</p><p className="text-sm font-bold text-[#ff4d00] font-mono">{clientIp}</p></div>
-                   <div><p className="text-[9px] text-[#8b92a5] uppercase mb-1">Location</p><p className="text-sm font-bold text-white">{clientLocation}</p></div>
+                   <div>
+                     <div className="flex justify-between items-center mb-1">
+                        <p className="text-[9px] text-[#8b92a5] uppercase">Location</p>
+                        {clientFullData?.accuracy === 'high' && <span className="text-[7px] bg-green-500/20 text-green-500 px-1 rounded border border-green-500/30">GPS ACCURATE</span>}
+                     </div>
+                     <div className="flex items-center justify-between">
+                        <p className="text-sm font-bold text-white truncate">{clientLocation}</p>
+                        <button onClick={fetchIpInfo} className="text-[8px] text-[#ff4d00] hover:underline uppercase font-bold ml-2">Refine</button>
+                     </div>
+                   </div>
                    <div><p className="text-[9px] text-[#8b92a5] uppercase mb-1">Transmission</p><div className="flex items-center gap-2 text-sm font-bold text-white">{networkType === 'WiFi' ? <Wifi size={16} /> : <Signal size={16} />}{networkType}</div></div>
                 </div>
               </div>
@@ -557,10 +665,17 @@ export default function App() {
                     <h2 className="text-xl font-black mb-8 italic uppercase">Terminal_Specifications</h2>
                     {clientFullData ? (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 text-sm">
-                        <div className="space-y-1"><p className="text-[9px] text-[#8b92a5] uppercase">Region</p><p className="font-bold">{clientFullData.region}</p></div>
-                        <div className="space-y-1"><p className="text-[9px] text-[#8b92a5] uppercase">Organization</p><p className="font-bold">{clientFullData.connection.org}</p></div>
-                        <div className="space-y-1"><p className="text-[9px] text-[#8b92a5] uppercase">Coordinates</p><p className="font-bold">{clientFullData.latitude}, {clientFullData.longitude}</p></div>
-                        <div className="space-y-1"><p className="text-[9px] text-[#8b92a5] uppercase">Timezone</p><p className="font-bold">{clientFullData.timezone.id}</p></div>
+                        <div className="space-y-1"><p className="text-[9px] text-[#8b92a5] uppercase">Region</p><p className="font-bold">{clientFullData.region || "N/A"}</p></div>
+                        <div className="space-y-1"><p className="text-[9px] text-[#8b92a5] uppercase">Organization</p><p className="font-bold">{clientFullData.connection?.org || "N/A"}</p></div>
+                        <div className="space-y-1">
+                          <p className="text-[9px] text-[#8b92a5] uppercase">Coordinates</p>
+                          <p className="font-bold font-mono text-[#ff4d00]">{clientFullData.latitude?.toFixed(4)}, {clientFullData.longitude?.toFixed(4)}</p>
+                          {clientFullData.accuracy === 'high' && <p className="text-[8px] text-green-500 flex items-center gap-1 font-bold mt-1"><ShieldCheck size={10}/> GPS_SYNCED</p>}
+                        </div>
+                        <div className="space-y-1"><p className="text-[9px] text-[#8b92a5] uppercase">Timezone</p><p className="font-bold">{clientFullData.timezone?.id || "N/A"}</p></div>
+                        <div className="col-span-1 sm:col-span-2">
+                           <button onClick={fetchIpInfo} className="w-full py-2 border border-[#ff4d00]/30 text-[#ff4d00] text-[10px] font-bold hover:bg-[#ff4d00]/10 transition-all uppercase italic">Re-calculate Geolocation Matrix</button>
+                        </div>
                       </div>
                     ) : <p>Synchronizing...</p>}
                     <button onClick={() => setShowIpDetails(false)} className="mt-12 w-full py-3 bg-white text-black font-black text-xs hover:bg-[#ff4d00] transition-colors uppercase">Return to Terminal</button>
@@ -578,34 +693,56 @@ export default function App() {
                     )}
                     <div className="grid grid-cols-2 gap-4">
                        <div className="bg-[#0a0a0a] border border-white/5 p-6 relative group overflow-hidden">
+                          <div className={`absolute top-0 left-0 w-full h-[2px] bg-[#ff4d00] opacity-50 z-20 ${testState === 'download' ? 'animate-[scan_2s_linear_infinite]' : 'hidden'}`}></div>
                           <div className="absolute bottom-0 left-0 w-full h-0.5 bg-gradient-to-r from-transparent via-[#ff4d00] to-transparent opacity-30"></div>
                           <div className="flex items-center justify-between mb-2">
-                             <div className="flex items-center gap-2 text-[#8b92a5] text-[10px] font-bold uppercase tracking-wider"><ArrowDown size={14} className="text-[#ff4d00]" /> Downlink</div>
+                             <div className="flex items-center gap-2 text-[#8b92a5] text-[10px] font-bold uppercase tracking-wider">
+                                <ArrowDown size={14} className={`${testState === 'download' ? 'text-[#ff4d00] animate-pulse' : 'text-[#ff4d00]'}`} /> Downlink
+                             </div>
                              {testState === 'finished' && <div className="text-[8px] bg-white/5 px-2 py-0.5 rounded text-white/50">{serverColo}</div>}
                           </div>
-                          <div className="text-5xl font-black text-white italic">{download}</div>
+                          <div className={`text-5xl font-black italic transition-all duration-500 ${testState === 'download' ? 'text-[#ff4d00] scale-105' : 'text-white'}`}>{download}</div>
                           <p className="text-[9px] text-[#8b92a5] mt-1 font-bold uppercase">Mbps</p>
                        </div>
                        <div className="bg-[#0a0a0a] border border-white/5 p-6 relative group overflow-hidden">
+                          <div className={`absolute top-0 left-0 w-full h-[2px] bg-white opacity-50 z-20 ${testState === 'upload' ? 'animate-[scan_2s_linear_infinite]' : 'hidden'}`}></div>
                           <div className="absolute bottom-0 left-0 w-full h-0.5 bg-gradient-to-r from-transparent via-white to-transparent opacity-30"></div>
                           <div className="flex items-center justify-between mb-2">
-                             <div className="flex items-center gap-2 text-[#8b92a5] text-[10px] font-bold uppercase tracking-wider"><ArrowUp size={14} className="text-white" /> Uplink</div>
+                             <div className="flex items-center gap-2 text-[#8b92a5] text-[10px] font-bold uppercase tracking-wider">
+                                <ArrowUp size={14} className={`${testState === 'upload' ? 'text-white animate-pulse' : 'text-white'}`} /> Uplink
+                             </div>
                              {testState === 'finished' && <div className="text-[8px] bg-white/5 px-2 py-0.5 rounded text-white/50">{serverColo}</div>}
                           </div>
-                          <div className="text-5xl font-black text-white italic">{upload}</div>
+                          <div className={`text-5xl font-black italic transition-all duration-500 ${testState === 'upload' ? 'text-[#ff4d00] scale-105' : 'text-white'}`}>{upload}</div>
                           <p className="text-[9px] text-[#8b92a5] mt-1 font-bold uppercase">Mbps</p>
                        </div>
                     </div>
-                    <div className="bg-[#0a0a0a] border border-white/5 p-6 flex flex-col md:flex-row justify-between items-center gap-8">
-                       <div className="flex gap-8">
-                          <div><p className="text-[9px] text-[#8b92a5] uppercase mb-1">Latency</p><p className="text-2xl font-black text-white">{pingIdle}<span className="text-[10px] text-[#8b92a5] ml-1">ms</span></p></div>
-                          <div><p className="text-[9px] text-[#8b92a5] uppercase mb-1">Jitter</p><p className="text-2xl font-black text-white">{jitter}<span className="text-[10px] text-[#8b92a5] ml-1">ms</span></p></div>
+
+                    <div className="bg-[#0a0a0a] border border-white/5 p-6 grid grid-cols-1 md:grid-cols-3 items-center gap-8">
+                       <div className="flex flex-col items-center md:items-start">
+                          <p className="text-[9px] text-[#8b92a5] uppercase mb-1 tracking-widest">Latency Matrix</p>
+                          <div className="flex gap-6">
+                             <div><p className="text-2xl font-black text-white">{pingIdle}<span className="text-[10px] text-[#8b92a5] ml-1">ms</span></p><p className="text-[7px] text-[#8b92a5] uppercase">Ping</p></div>
+                             <div><p className="text-2xl font-black text-white">{jitter}<span className="text-[10px] text-[#8b92a5] ml-1">ms</span></p><p className="text-[7px] text-[#8b92a5] uppercase">Jitter</p></div>
+                          </div>
                        </div>
-                       <div className="flex gap-6">
-                          <div className="flex flex-col items-center"><Globe size={20} className="text-white mb-1" />{renderDots(qoeWeb, testState === 'finished')}</div>
-                          <div className="flex flex-col items-center"><Tv size={20} className="text-white mb-1" />{renderDots(qoeVideo, testState === 'finished')}</div>
-                          <div className="flex flex-col items-center"><Phone size={20} className="text-white mb-1" />{renderDots(qoeCalls, testState === 'finished')}</div>
-                          <div className="flex flex-col items-center"><Gamepad2 size={20} className="text-white mb-1" />{renderDots(qoeGames, testState === 'finished')}</div>
+                       
+                       <div className="flex justify-center gap-6 border-x border-white/5 px-4">
+                          <div className="flex flex-col items-center"><Globe size={18} className="text-white mb-1 opacity-70" />{renderDots(qoeWeb, testState === 'finished')}</div>
+                          <div className="flex flex-col items-center"><Tv size={18} className="text-white mb-1 opacity-70" />{renderDots(qoeVideo, testState === 'finished')}</div>
+                          <div className="flex flex-col items-center"><Phone size={18} className="text-white mb-1 opacity-70" />{renderDots(qoeCalls, testState === 'finished')}</div>
+                          <div className="flex flex-col items-center"><Gamepad2 size={18} className="text-white mb-1 opacity-70" />{renderDots(qoeGames, testState === 'finished')}</div>
+                       </div>
+
+                       <div className="flex flex-col items-center md:items-end">
+                          <p className="text-[9px] text-[#8b92a5] uppercase mb-1 tracking-widest">Link Quality</p>
+                          <div className="flex items-center gap-2">
+                             <div className="text-right">
+                                <p className="text-lg font-black text-white italic">{(qoeWeb + qoeVideo + qoeCalls + qoeGames) / 4 || 0}<span className="text-[10px] text-[#8b92a5] ml-1">/ 5.0</span></p>
+                                <p className="text-[7px] text-green-500 font-bold uppercase">Signal_Optimal</p>
+                             </div>
+                             <Zap size={20} className="text-[#ff4d00] animate-pulse" />
+                          </div>
                        </div>
                     </div>
                     <motion.button 
