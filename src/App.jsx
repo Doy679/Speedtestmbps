@@ -112,23 +112,23 @@ export default function App() {
       setNetworkType('Wired / Ethernet');
     }
 
-    fetch('https://ipwho.is/')
+    fetch('https://get.geojs.io/v1/ip/geo.json')
       .then(res => res.ok ? res.json() : Promise.reject())
       .then(data => {
-        if (data.success) {
+        if (data.ip) {
           setClientIp(data.ip);
-          setClientIsp(data.connection.isp || data.connection.org || 'Unknown ISP');
+          setClientIsp(data.organization_name || data.organization || 'Unknown ISP');
           setClientLocation(`${data.city}, ${data.country}`);
           setClientFullData({
             ip: data.ip,
-            connection: { isp: data.connection.isp, org: data.connection.org },
+            connection: { isp: data.organization_name, org: data.organization },
             city: data.city,
             region: data.region,
             country: data.country,
             latitude: data.latitude,
             longitude: data.longitude,
-            timezone: { id: data.timezone.id, utc: data.timezone.utc },
-            flag: { emoji: data.flag.emoji }
+            timezone: { id: data.timezone, utc: '' },
+            flag: { emoji: '' }
           });
         } else {
           return Promise.reject();
