@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useSyncExternalStore } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import GaugeComponent from 'react-gauge-component';
-import { AreaChart, Area, ResponsiveContainer, YAxis } from 'recharts';
+import { AreaChart, Area, ResponsiveContainer, YAxis, CartesianGrid } from 'recharts';
 import { 
   ArrowDown, 
   ArrowUp, 
@@ -705,31 +705,33 @@ export default function App() {
                      />
                    </motion.div>
                    
-                   {/* LIVE SPEED GRAPH */}
-                   <div className="w-full max-w-xl h-24 -mt-8 relative z-0 opacity-80">
+                   {/* LIVE SPEED GRAPH - STOCK MARKET STYLE */}
+                   <div className="w-full max-w-xl h-24 mt-4 relative z-0 opacity-80">
                      <ResponsiveContainer width="100%" height="100%">
                        <AreaChart data={chartData} margin={{ top: 5, right: 0, left: 0, bottom: 0 }}>
                          <defs>
                            <linearGradient id="colorSpeed" x1="0" y1="0" x2="0" y2="1">
-                             <stop offset="5%" stopColor={testState === 'upload' ? '#ffffff' : '#ff4d00'} stopOpacity={0.8}/>
-                             <stop offset="95%" stopColor={testState === 'upload' ? '#ffffff' : '#ff4d00'} stopOpacity={0}/>
+                             <stop offset="5%" stopColor={testState === 'upload' ? '#00e5ff' : '#00ff88'} stopOpacity={0.5}/>
+                             <stop offset="95%" stopColor={testState === 'upload' ? '#00e5ff' : '#00ff88'} stopOpacity={0}/>
                            </linearGradient>
                            <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-                             <feGaussianBlur stdDeviation="4" result="blur" />
+                             <feGaussianBlur stdDeviation="2" result="blur" />
                              <feComposite in="SourceGraphic" in2="blur" operator="over" />
                            </filter>
                          </defs>
                          <YAxis domain={['auto', 'auto']} hide />
+                         {/* Optional grid for that financial terminal look */}
+                         <CartesianGrid strokeDasharray="3 3" stroke="#333" vertical={false} />
                          <Area 
-                            type="basis" 
+                            type="linear" 
                             dataKey="speed" 
-                            stroke={testState === 'upload' ? '#ffffff' : '#ff4d00'} 
-                            strokeWidth={3}
+                            stroke={testState === 'upload' ? '#00e5ff' : '#00ff88'} 
+                            strokeWidth={2}
                             fillOpacity={1} 
                             fill="url(#colorSpeed)" 
                             isAnimationActive={true}
-                            animationDuration={400}
-                            animationEasing="ease-out"
+                            animationDuration={300}
+                            animationEasing="linear"
                             filter="url(#glow)"
                          />
                        </AreaChart>
@@ -770,7 +772,7 @@ export default function App() {
               <div className="text-[9px] text-[#8b92a5] font-mono overflow-hidden whitespace-nowrap max-w-[200px] md:max-w-md"><span className="inline-block animate-[scrollText_20s_linear_infinite]">SYNCING_PACKETS... ENCRYPTING_TERMINAL_LINK... CAPTURING_BURST_METRICS... HANDSHAKING_CLOUDFLARE_EDGE... OPTIMIZING_SIGNAL_PATHWAY...</span></div>
             </div>
             <div className="flex items-center gap-6">
-              <div className="text-right"><p className="text-[8px] text-[#8b92a5] uppercase">Link_Stability</p><p className="text-xs font-bold text-white tracking-widest">{Math.floor(95 + Math.random() * 5)}% <span className="text-[8px] text-green-500">NOMINAL</span></p></div>
+              <div className="text-right"><p className="text-[8px] text-[#8b92a5] uppercase">Link_Stability</p><p className="text-xs font-bold text-white tracking-widest">99% <span className="text-[8px] text-green-500">NOMINAL</span></p></div>
               <div className="text-right"><p className="text-[8px] text-[#8b92a5] uppercase">Packet_Loss</p><p className="text-xs font-bold text-white tracking-widest">0.00%</p></div>
               <div className="flex items-center gap-2 px-3 py-1 bg-white/5 border border-white/10 rounded"><Cpu size={12} className="text-[#ff4d00]" /><span className="text-[10px] font-bold text-white">{progress}%</span></div>
             </div>

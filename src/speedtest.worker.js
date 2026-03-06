@@ -1,4 +1,4 @@
-/* eslint-disable no-restricted-globals */
+ 
 
 self.onmessage = async (e) => {
   const { type, payload } = e.data;
