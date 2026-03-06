@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useSyncExternalStore } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import GaugeComponent from 'react-gauge-component';
+import { AreaChart, Area, ResponsiveContainer, YAxis } from 'recharts';
 import { 
   ArrowDown, 
   ArrowUp, 
@@ -27,7 +28,8 @@ import {
   ShieldCheck,
   ZapOff,
   Home,
-  RefreshCcw
+  RefreshCcw,
+  Server
 } from 'lucide-react';
 
 function subscribeOnline(callback) {
@@ -62,6 +64,10 @@ export default function App() {
   const [pingDown, setPingDown] = useState('--');
   const [pingUp, setPingUp] = useState('--');
   const [jitter, setJitter] = useState('--');
+  const [serverColo, setServerColo] = useState('Routing...');
+
+  // Chart Data
+  const [chartData, setChartData] = useState([]);
 
   // QoE Scores (0-5)
   const [qoeWeb, setQoeWeb] = useState(0);
@@ -77,7 +83,7 @@ export default function App() {
   const [showIpDetails, setShowIpDetails] = useState(false);
 
   // System Logs
-  const [logs, setLogs] = useState([{ msg: '>> CoreSync OS [v4.2.1] initialized.', type: 'info' }]);
+  const [logs, setLogs] = useState([{ msg: '>> CoreSync OS [v5.0.0] initialized. Worker threads ready.', type: 'info' }]);
   const [history, setHistory] = useState([]);
   const logEndRef = useRef(null);
 
@@ -135,12 +141,17 @@ export default function App() {
 
   const activeIntervals = useRef([]);
   const abortControllerRef = useRef(null);
+  const workerRef = useRef(null);
 
   const cleanup = () => {
     activeIntervals.current.forEach(clearInterval);
     activeIntervals.current = [];
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
+    }
+    if (workerRef.current) {
+      workerRef.current.terminate();
+      workerRef.current = null;
     }
   };
 
@@ -163,8 +174,25 @@ export default function App() {
     setJitter('--');
     setProgress(0);
     setCurrentSpeed('0.00');
+    setChartData([]);
+    setServerColo('Routing...');
     setQoeWeb(0); setQoeVideo(0); setQoeCalls(0); setQoeGames(0);
     addLog('System state manual reset initiated.', 'warn');
+  };
+
+  const getCloudflareTrace = async () => {
+    try {
+      const res = await fetch('https://speed.cloudflare.com/cdn-cgi/trace');
+      const text = await res.text();
+      const lines = text.split('\n');
+      const coloLine = lines.find(line => line.startsWith('colo='));
+      if (coloLine) {
+        return coloLine.split('=')[1];
+      }
+    } catch (e) {
+      return 'Edge';
+    }
+    return 'Edge';
   };
 
   const startTest = async () => {
@@ -181,8 +209,14 @@ export default function App() {
     setPingDown('--');
     setPingUp('--');
     setJitter('--');
+    setChartData([]);
     setQoeWeb(0); setQoeVideo(0); setQoeCalls(0); setQoeGames(0);
-    addLog('Initiating synchronization sequence...', 'warn');
+    addLog('Initiating hardware synchronization...', 'warn');
+
+    // Fetch routing info
+    const colo = await getCloudflareTrace();
+    setServerColo(colo);
+    addLog(`Routed via Cloudflare Datacenter: [${colo}]`);
 
     for (let i = 3; i > 0; i--) {
       setCountdownVal(i);
@@ -192,37 +226,12 @@ export default function App() {
     }
     
     setTestState('ping');
-    const ENDPOINTS = [
-      'https://speed.cloudflare.com/__down',
-      'https://cp.cloudflare.com/generate_204',
-      'https://www.google.com/generate_204',
-      'https://connectivitycheck.gstatic.com/generate_204'
-    ];
-
-    addLog('Locating optimal edge terminal...', 'warn');
-    let bestServer = ENDPOINTS[0];
-    let minDiscoveryPing = Infinity;
-
-    // Discovery Race
-    await Promise.all(ENDPOINTS.map(async (url) => {
-      try {
-        const s = performance.now();
-        await fetch(url, { mode: 'no-cors', cache: 'no-store', signal });
-        const lat = performance.now() - s;
-        if (lat < minDiscoveryPing) {
-          minDiscoveryPing = lat;
-          bestServer = url;
-        }
-      } catch(e) {}
-    }));
-
-    const CF_UP = 'https://speed.cloudflare.com/__up';
-    addLog(`Optimal node locked: ${new URL(bestServer).hostname}`);
+    const bestServer = 'https://speed.cloudflare.com/__down';
 
     // HIGH-PRECISION NETWORK ENGINE
     const getAccuratePing = async (url, signal) => {
       const uniqueId = `p_${Math.random().toString(36).slice(2, 7)}`;
-      const fetchUrl = `${url}${url.includes('?') ? '&' : '?'}id=${uniqueId}`;
+      const fetchUrl = `${url}?id=${uniqueId}`;
       try {
         const startTimestamp = performance.now();
         await fetch(fetchUrl, { cache: 'no-store', signal, priority: 'high', mode: 'no-cors' });
@@ -243,22 +252,19 @@ export default function App() {
       await delay(500, signal);
       if (signal.aborted) return;
 
-      // 1. Measure Ping (The "Real" Way)
+      // 1. Measure Ping
       addLog('Capturing high-frequency latency matrix...', 'warn');
       const pings = [];
-      
       for (let i = 0; i < 30; i++) {
         if (signal.aborted) return;
         const p = await getAccuratePing(bestServer, signal);
         if (p) pings.push(p);
         
         const sorted = [...pings].sort((a, b) => a - b);
-        // Take the absolute lowest 10% - this is your true network capability
         const bestSamples = sorted.slice(0, Math.max(1, Math.floor(sorted.length * 0.1)));
         finalPing = Math.round(bestSamples.reduce((a, b) => a + b) / bestSamples.length);
         setPingIdle(finalPing);
         
-        // Calculate Jitter (Average of absolute differences between consecutive pings)
         if (pings.length > 1) {
           const jitters = [];
           for (let j = 1; j < pings.length; j++) {
@@ -267,20 +273,16 @@ export default function App() {
           finalJitter = Math.round(jitters.reduce((a, b) => a + b) / jitters.length);
           setJitter(finalJitter);
         }
-        
         await delay(30, signal);
       }
       addLog(`Ping: ${finalPing}ms | Jitter: ${finalJitter}ms`, 'success');
       setProgress(15);
-      await delay(1500, signal);
+      await delay(1000, signal);
+      setChartData([]); // Reset chart for download
 
-      // 2. Measure Download (Parallel Multi-Stream Saturation)
+      // 2. Measure Download using Web Worker
       setTestState('download');
-      addLog('Saturating downlink with 6-way parallel burst (10s)...', 'warn');
-      
-      const BYTES_PER_STREAM = 50 * 1024 * 1024; // 50MB per request
-      const streamBytes = [0, 0, 0, 0, 0, 0];
-      const startDown = performance.now();
+      addLog('Saturating downlink with off-thread worker (10s)...', 'warn');
       
       const downLatencies = [];
       const downLatInterval = setInterval(async () => {
@@ -289,89 +291,77 @@ export default function App() {
           if (p) downLatencies.push(p);
           setPingDown(Math.round([...downLatencies].sort((a,b)=>a-b)[0] || 0));
         } catch(e) {}
-      }, 200);
+      }, 300);
       activeIntervals.current.push(downLatInterval);
 
-      let lastDownTime = performance.now();
-      let lastDownBytes = 0;
-      let downSpeedSamples = [];
-      
-      const downSpeedInterval = setInterval(() => {
-        const now = performance.now();
-        const totalReceived = streamBytes.reduce((a, b) => a + b, 0);
-        const deltaBytes = totalReceived - lastDownBytes;
-        const deltaTime = (now - lastDownTime) / 1000;
+      await new Promise((resolve) => {
+        workerRef.current = new Worker(new URL('./speedtest.worker.js', import.meta.url));
         
-        if (deltaTime > 0 && totalReceived > 0) {
-          const currentSpeedMbps = (deltaBytes * 8 / deltaTime) / 1000000;
-          downSpeedSamples.push(currentSpeedMbps);
-          if (downSpeedSamples.length > 20) downSpeedSamples.shift(); // keep last 5s
-          
-          // Sort to find true sustained speed, dropping massive random spikes or dips
-          const sorted = [...downSpeedSamples].sort((a,b) => a-b);
-          const p90Index = Math.floor(sorted.length * 0.9) - 1;
-          const speed = sorted[Math.max(0, p90Index)];
-          
-          if (speed > 0) {
-            finalDown = speed.toFixed(2);
-            setCurrentSpeed(finalDown);
-            setDownload(finalDown);
+        let lastDownTime = performance.now();
+        let lastDownBytes = 0;
+        let downSpeedSamples = [];
+        let timeOffset = 0;
+        
+        workerRef.current.onmessage = (e) => {
+          if (signal.aborted) {
+             workerRef.current.terminate();
+             resolve();
+             return;
           }
-        }
-        
-        lastDownTime = now;
-        lastDownBytes = totalReceived;
-        
-        const currentDuration = (now - startDown) / 1000;
-        setProgress(15 + Math.min(1, currentDuration / 10) * 35);
-      }, 250);
-      activeIntervals.current.push(downSpeedInterval);
-
-      // Launch 6 Parallel Streams
-      const downloadStreams = Array.from({ length: 6 }).map(async (_, i) => {
-        while (true) {
-          const duration = (performance.now() - startDown) / 1000;
-          if (signal.aborted || duration > 10) break;
-
-          try {
-            const cacheBuster = Math.random().toString(36).slice(2);
-            const res = await fetch(`https://speed.cloudflare.com/__down?bytes=${BYTES_PER_STREAM}&s=${i}&r=${cacheBuster}`, { cache: 'no-store', signal });
-            const reader = res.body.getReader();
+          const { type, totalBytes } = e.data;
+          
+          if (type === 'DOWNLOAD_PROGRESS') {
+            const now = performance.now();
+            const deltaBytes = totalBytes - lastDownBytes;
+            const deltaTime = (now - lastDownTime) / 1000;
             
-            while (true) {
-              const { done, value } = await reader.read();
-              const currentDuration = (performance.now() - startDown) / 1000;
+            if (deltaTime > 0 && totalBytes > 0) {
+              const currentSpeedMbps = (deltaBytes * 8 / deltaTime) / 1000000;
+              downSpeedSamples.push(currentSpeedMbps);
+              if (downSpeedSamples.length > 20) downSpeedSamples.shift(); 
               
-              if (signal.aborted || currentDuration > 10) {
-                reader.cancel();
-                break;
+              const sorted = [...downSpeedSamples].sort((a,b) => a-b);
+              const p90Index = Math.floor(sorted.length * 0.9) - 1;
+              const speed = sorted[Math.max(0, p90Index)];
+              
+              if (speed > 0) {
+                finalDown = speed.toFixed(2);
+                setCurrentSpeed(finalDown);
+                setDownload(finalDown);
+                
+                timeOffset += deltaTime;
+                setChartData(prev => [...prev, { time: timeOffset, speed: parseFloat(finalDown) }].slice(-40));
               }
-              if (done) break; 
-              
-              streamBytes[i] += value.length;
             }
-          } catch(e) {
-             if (e.name === 'AbortError') break;
+            
+            lastDownTime = now;
+            lastDownBytes = totalBytes;
+            setProgress(15 + Math.min(1, timeOffset / 10) * 35);
           }
-        }
+          
+          if (type === 'DOWNLOAD_COMPLETE') {
+            workerRef.current.terminate();
+            resolve();
+          }
+        };
+
+        workerRef.current.postMessage({
+          type: 'START_DOWNLOAD',
+          payload: { url: 'https://speed.cloudflare.com/__down', streams: 6, duration: 10 }
+        });
       });
 
-      await Promise.all(downloadStreams);
       clearInterval(downLatInterval);
-      clearInterval(downSpeedInterval);
       finalDown = parseFloat(finalDown) > 0 ? finalDown : '0.00';
       addLog(`Downlink Saturated: ${finalDown} Mbps`, 'success');
       await delay(1500, signal);
       if (signal.aborted) return;
+      setChartData([]); // Reset chart for upload
 
-      // 3. Measure Upload (Parallel Uplink Burst)
+      // 3. Measure Upload using Web Worker
       setTestState('upload');
-      addLog('Initiating 6-way parallel uplink burst (10s)...', 'warn');
+      addLog('Initiating parallel uplink burst via worker (10s)...', 'warn');
       setCurrentSpeed('0.00');
-      
-      const UP_CHUNK_SIZE = 25 * 1024 * 1024; // 25MB chunks
-      const uploadData = new Uint8Array(UP_CHUNK_SIZE);
-      crypto.getRandomValues(uploadData);
       
       const upLatencies = [];
       const upLatInterval = setInterval(async () => {
@@ -380,88 +370,67 @@ export default function App() {
           if (p) upLatencies.push(p);
           setPingUp(Math.round([...upLatencies].sort((a,b)=>a-b)[0] || 0));
         } catch(e) {}
-      }, 200);
+      }, 300);
       activeIntervals.current.push(upLatInterval);
 
-      const startUp = performance.now();
-      let totalUploadedBytes = 0;
-      
-      let lastUpTime = performance.now();
-      let lastUpBytes = 0;
-      let upSpeedSamples = [];
-      
-      const upSpeedInterval = setInterval(() => {
-        const now = performance.now();
-        const deltaBytes = totalUploadedBytes - lastUpBytes;
-        const deltaTime = (now - lastUpTime) / 1000;
+      await new Promise((resolve) => {
+        workerRef.current = new Worker(new URL('./speedtest.worker.js', import.meta.url));
         
-        if (deltaTime > 0 && totalUploadedBytes > 0) {
-          const currentSpeedMbps = (deltaBytes * 8 / deltaTime) / 1000000;
-          upSpeedSamples.push(currentSpeedMbps);
-          if (upSpeedSamples.length > 20) upSpeedSamples.shift();
-          
-          const sorted = [...upSpeedSamples].sort((a,b) => a-b);
-          const p90Index = Math.floor(sorted.length * 0.9) - 1;
-          const speed = sorted[Math.max(0, p90Index)];
-          
-          if (speed > 0) {
-            finalUp = speed.toFixed(2);
-            setCurrentSpeed(finalUp);
-            setUpload(finalUp);
+        let lastUpTime = performance.now();
+        let lastUpBytes = 0;
+        let upSpeedSamples = [];
+        let timeOffset = 0;
+        
+        workerRef.current.onmessage = (e) => {
+          if (signal.aborted) {
+             workerRef.current.terminate();
+             resolve();
+             return;
           }
-        }
-        
-        lastUpTime = now;
-        lastUpBytes = totalUploadedBytes;
-        
-        const currentDuration = (now - startUp) / 1000;
-        setProgress(50 + Math.min(1, currentDuration / 10) * 50);
-      }, 250);
-      activeIntervals.current.push(upSpeedInterval);
-
-      // Launch 6 Continuous Parallel Upload loops
-      const uploadStreams = Array.from({ length: 6 }).map(async () => {
-        while (true) {
-          const duration = (performance.now() - startUp) / 1000;
-          if (signal.aborted || duration > 10) break; 
+          const { type, totalBytes } = e.data;
           
-          await new Promise((resolve) => {
-            const xhr = new XMLHttpRequest();
-            let lastLoaded = 0;
-            xhr.upload.onprogress = (event) => {
-               if (signal.aborted) {
-                  xhr.abort();
-                  return resolve();
-               }
-               const delta = event.loaded - lastLoaded;
-               totalUploadedBytes += delta;
-               lastLoaded = event.loaded;
-            };
+          if (type === 'UPLOAD_PROGRESS') {
+            const now = performance.now();
+            const deltaBytes = totalBytes - lastUpBytes;
+            const deltaTime = (now - lastUpTime) / 1000;
             
-            const cleanupXHR = () => {
-               resolve();
-            };
+            if (deltaTime > 0 && totalBytes > 0) {
+              const currentSpeedMbps = (deltaBytes * 8 / deltaTime) / 1000000;
+              upSpeedSamples.push(currentSpeedMbps);
+              if (upSpeedSamples.length > 20) upSpeedSamples.shift();
+              
+              const sorted = [...upSpeedSamples].sort((a,b) => a-b);
+              const p90Index = Math.floor(sorted.length * 0.9) - 1;
+              const speed = sorted[Math.max(0, p90Index)];
+              
+              if (speed > 0) {
+                finalUp = speed.toFixed(2);
+                setCurrentSpeed(finalUp);
+                setUpload(finalUp);
+
+                timeOffset += deltaTime;
+                setChartData(prev => [...prev, { time: timeOffset, speed: parseFloat(finalUp) }].slice(-40));
+              }
+            }
             
-            xhr.onload = cleanupXHR;
-            xhr.onerror = cleanupXHR;
-            xhr.onabort = cleanupXHR;
-            
-            const cacheBuster = Math.random().toString(36).slice(2);
-            xhr.open('POST', `https://speed.cloudflare.com/__up?r=${cacheBuster}`);
-            xhr.send(uploadData);
-            
-            const abortHandler = () => {
-               xhr.abort();
-               resolve();
-            };
-            signal.addEventListener('abort', abortHandler, { once: true });
-          });
-        }
+            lastUpTime = now;
+            lastUpBytes = totalBytes;
+            setProgress(50 + Math.min(1, timeOffset / 10) * 50);
+          }
+
+          if (type === 'UPLOAD_COMPLETE') {
+            workerRef.current.terminate();
+            resolve();
+          }
+        };
+
+        workerRef.current.postMessage({
+          type: 'START_UPLOAD',
+          payload: { url: 'https://speed.cloudflare.com/__up', streams: 4, duration: 10 }
+        });
       });
 
-      await Promise.all(uploadStreams);
       clearInterval(upLatInterval);
-      clearInterval(upSpeedInterval);
       if (signal.aborted) return;
 
       finalUp = parseFloat(finalUp) > 0 ? finalUp : '0.00';
@@ -575,13 +544,19 @@ export default function App() {
                     <div className="grid grid-cols-2 gap-4">
                        <div className="bg-[#0a0a0a] border border-white/5 p-6 relative group overflow-hidden">
                           <div className="absolute bottom-0 left-0 w-full h-0.5 bg-gradient-to-r from-transparent via-[#ff4d00] to-transparent opacity-30"></div>
-                          <div className="flex items-center gap-2 mb-2 text-[#8b92a5] text-[10px] font-bold uppercase tracking-wider"><ArrowDown size={14} className="text-[#ff4d00]" /> Downlink</div>
+                          <div className="flex items-center justify-between mb-2">
+                             <div className="flex items-center gap-2 text-[#8b92a5] text-[10px] font-bold uppercase tracking-wider"><ArrowDown size={14} className="text-[#ff4d00]" /> Downlink</div>
+                             {testState === 'finished' && <div className="text-[8px] bg-white/5 px-2 py-0.5 rounded text-white/50">{serverColo}</div>}
+                          </div>
                           <div className="text-5xl font-black text-white italic">{download}</div>
                           <p className="text-[9px] text-[#8b92a5] mt-1 font-bold uppercase">Mbps</p>
                        </div>
                        <div className="bg-[#0a0a0a] border border-white/5 p-6 relative group overflow-hidden">
                           <div className="absolute bottom-0 left-0 w-full h-0.5 bg-gradient-to-r from-transparent via-white to-transparent opacity-30"></div>
-                          <div className="flex items-center gap-2 mb-2 text-[#8b92a5] text-[10px] font-bold uppercase tracking-wider"><ArrowUp size={14} className="text-white" /> Uplink</div>
+                          <div className="flex items-center justify-between mb-2">
+                             <div className="flex items-center gap-2 text-[#8b92a5] text-[10px] font-bold uppercase tracking-wider"><ArrowUp size={14} className="text-white" /> Uplink</div>
+                             {testState === 'finished' && <div className="text-[8px] bg-white/5 px-2 py-0.5 rounded text-white/50">{serverColo}</div>}
+                          </div>
                           <div className="text-5xl font-black text-white italic">{upload}</div>
                           <p className="text-[9px] text-[#8b92a5] mt-1 font-bold uppercase">Mbps</p>
                        </div>
@@ -641,74 +616,97 @@ export default function App() {
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.3 }}
-            className="flex flex-col items-center justify-center py-0"
+            className="flex flex-col items-center justify-center py-0 w-full"
           >
-            <div className="text-center mb-0">
+            <div className="text-center mb-0 w-full">
                <div className="text-[10px] font-bold text-[#ff4d00] uppercase tracking-[0.5em] mb-1">System_Sync_Active</div>
                {testState === 'countdown' ? (
                  <div className="text-6xl md:text-7xl font-black italic tracking-tighter text-white h-[150px] flex items-center justify-center">{countdownVal}</div>
                ) : (
-                 <motion.div 
-                   initial={{ scale: 0.8, opacity: 0 }}
-                   animate={{ scale: 1, opacity: 1 }}
-                   className="w-full max-w-[320px] mx-auto mt-0 mb-0"
-                 >
-                   <GaugeComponent
-                      value={parseFloat(currentSpeed) || 0}
-                      minValue={0}
-                      maxValue={500}
-                      style={{ height: '220px' }}
-                      arc={{
-                        width: 0.15,
-                        padding: 0.02,
-                        cornerRadius: 5,
-                        subArcs: [
-                          { limit: 50, color: '#1a1a1a' },
-                          { limit: 150, color: '#3a3a3a' },
-                          { limit: 300, color: '#ff4d00' },
-                          { limit: 500, color: '#ff2a00' }
-                        ]
-                      }}
-                      pointer={{
-                        type: "needle",
-                        length: 0.7,
-                        width: 12,
-                        animationDelay: 0,
-                        animationDuration: 250,
-                        elastic: true,
-                        color: '#ffffff',
-                        baseColor: '#ff4d00'
-                      }}
-                      labels={{
-                        valueLabel: {
-                          formatTextValue: val => val.toFixed(2),
-                          style: { fontSize: "65px", fill: "#ffffff", fontWeight: "900", fontStyle: "italic", textShadow: "none" }
-                        },
-                        tickLabels: {
-                          type: 'outer',
-                          defaultTickValueConfig: { style: { fill: '#8b92a5', fontSize: '10px', fontWeight: 'bold', textShadow: 'none' } },
-                          defaultTickLineConfig: { color: '#333' },
-                          ticks: [{value: 0}, {value: 100}, {value: 200}, {value: 300}, {value: 400}, {value: 500}]
-                        }
-                      }}
-                   />
-                 </motion.div>
+                 <div className="w-full flex flex-col items-center">
+                   <motion.div 
+                     initial={{ scale: 0.8, opacity: 0 }}
+                     animate={{ scale: 1, opacity: 1 }}
+                     className="w-full max-w-[320px] mx-auto mt-0 mb-0 relative z-10"
+                   >
+                     <GaugeComponent
+                        value={parseFloat(currentSpeed) || 0}
+                        minValue={0}
+                        maxValue={500}
+                        style={{ height: '220px' }}
+                        arc={{
+                          width: 0.15,
+                          padding: 0.02,
+                          cornerRadius: 5,
+                          subArcs: [
+                            { limit: 50, color: '#1a1a1a' },
+                            { limit: 150, color: '#3a3a3a' },
+                            { limit: 300, color: '#ff4d00' },
+                            { limit: 500, color: '#ff2a00' }
+                          ]
+                        }}
+                        pointer={{
+                          type: "needle",
+                          length: 0.7,
+                          width: 12,
+                          animationDelay: 0,
+                          animationDuration: 250,
+                          elastic: true,
+                          color: '#ffffff',
+                          baseColor: '#ff4d00'
+                        }}
+                        labels={{
+                          valueLabel: {
+                            formatTextValue: val => val.toFixed(2),
+                            style: { fontSize: "65px", fill: "#ffffff", fontWeight: "900", fontStyle: "italic", textShadow: "none" }
+                          },
+                          tickLabels: {
+                            type: 'outer',
+                            defaultTickValueConfig: { style: { fill: '#8b92a5', fontSize: '10px', fontWeight: 'bold', textShadow: 'none' } },
+                            defaultTickLineConfig: { color: '#333' },
+                            ticks: [{value: 0}, {value: 100}, {value: 200}, {value: 300}, {value: 400}, {value: 500}]
+                          }
+                        }}
+                     />
+                   </motion.div>
+                   
+                   {/* LIVE SPEED GRAPH */}
+                   <div className="w-full max-w-xl h-24 -mt-8 relative z-0 opacity-80">
+                     <ResponsiveContainer width="100%" height="100%">
+                       <AreaChart data={chartData} margin={{ top: 5, right: 0, left: 0, bottom: 0 }}>
+                         <defs>
+                           <linearGradient id="colorSpeed" x1="0" y1="0" x2="0" y2="1">
+                             <stop offset="5%" stopColor={testState === 'upload' ? '#ffffff' : '#ff4d00'} stopOpacity={0.8}/>
+                             <stop offset="95%" stopColor={testState === 'upload' ? '#ffffff' : '#ff4d00'} stopOpacity={0}/>
+                           </linearGradient>
+                         </defs>
+                         <YAxis domain={['auto', 'auto']} hide />
+                         <Area 
+                            type="monotone" 
+                            dataKey="speed" 
+                            stroke={testState === 'upload' ? '#ffffff' : '#ff4d00'} 
+                            fillOpacity={1} 
+                            fill="url(#colorSpeed)" 
+                            isAnimationActive={false}
+                         />
+                       </AreaChart>
+                     </ResponsiveContainer>
+                   </div>
+                 </div>
                )}
-               <p className="text-[#8b92a5] text-[10px] font-bold uppercase tracking-widest mt-0">{testState==='countdown'?'Ready_For_Burst':`${testState.toUpperCase()}_LINK_STRENGTH`}</p>
+               <p className="text-[#8b92a5] text-[10px] font-bold uppercase tracking-widest mt-2">{testState==='countdown'?'Ready_For_Burst':`${testState.toUpperCase()}_LINK_STRENGTH`}</p>
             </div>
-            <div className="w-full max-w-xl bg-white/5 h-6 relative overflow-hidden border border-white/10 group mt-1">
-               <div className="absolute inset-0 bg-[linear-gradient(90deg,transparent,rgba(255,77,0,0.1),transparent)] animate-[scan_2s_infinite_linear]"></div>
-               <div className="h-full bg-[#ff4d00] transition-all duration-300 ease-out relative shadow-[0_0_20px_#ff4d0088]" style={{ width: `${testState === 'countdown' ? 0 : getPowerLevel(currentSpeed)}%` }}><div className="absolute top-0 right-0 h-full w-1.5 bg-white shadow-[0_0_10px_#fff]"></div></div>
-               <div className="absolute inset-0 flex justify-between px-2 pointer-events-none">{[...Array(10)].map((_, i) => <div key={i} className="w-px h-full bg-black/40"></div>)}</div>
+            
+            <div className="grid grid-cols-4 gap-4 mt-6 w-full max-w-xl">
+               <div className="text-center border-l border-white/10 pl-2"><p className="text-[8px] text-[#8b92a5] uppercase">Ping</p><p className="text-lg font-black">{pingIdle==='--'?'0':pingIdle}</p></div>
+               <div className="text-center border-l border-white/10 pl-2"><p className="text-[8px] text-[#8b92a5] uppercase">Jitter</p><p className="text-lg font-black">{jitter==='--'?'0':jitter}</p></div>
+               <div className="text-center border-l border-white/10 pl-2"><p className="text-[8px] text-[#8b92a5] uppercase">Load</p><p className="text-lg font-black">{testState==='download'?pingDown:(testState==='upload'?pingUp:'0')}</p></div>
+               <div className="text-center border-l border-white/10 pl-2"><p className="text-[8px] text-[#8b92a5] uppercase">Edge</p><p className="text-sm font-bold text-[#ff4d00] mt-1">{serverColo}</p></div>
             </div>
-            <div className="grid grid-cols-3 gap-6 mt-4 w-full max-w-lg">
-               <div className="text-center border-l border-white/10 pl-4"><p className="text-[8px] text-[#8b92a5] uppercase">Ping</p><p className="text-lg font-black">{pingIdle==='--'?'0':pingIdle}</p></div>
-               <div className="text-center border-l border-white/10 pl-4"><p className="text-[8px] text-[#8b92a5] uppercase">Jitter</p><p className="text-lg font-black">{jitter==='--'?'0':jitter}</p></div>
-               <div className="text-center border-l border-white/10 pl-4"><p className="text-[8px] text-[#8b92a5] uppercase">Load</p><p className="text-lg font-black">{testState==='download'?pingDown:(testState==='upload'?pingUp:'0')}</p></div>
-            </div>
-            <button onClick={startTest} className="mt-4 px-8 py-1.5 border border-[#ff4d00] text-[#ff4d00] font-black text-[10px] hover:bg-[#ff4d00] hover:text-black transition-all uppercase italic tracking-widest">Re-Sync_Terminal</button>
+            <button onClick={startTest} className="mt-8 px-8 py-1.5 border border-[#ff4d00] text-[#ff4d00] font-black text-[10px] hover:bg-[#ff4d00] hover:text-black transition-all uppercase italic tracking-widest">Re-Sync_Terminal</button>
           </motion.div>
-        )}
+        )
+        }
         </AnimatePresence>
       </div>
 
